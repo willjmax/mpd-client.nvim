@@ -20,7 +20,7 @@ M.artists = function()
 
     assert(client:send(message .. "\n"))
     while (response ~= 'OK') do
-        response, err = client:receive()
+        response, _ = client:receive()
         if (response ~= 'OK') then
             response = string.sub(response, 9, -1) -- remove 'Arist: '
             table.insert(artists, response)
@@ -41,7 +41,7 @@ M.albums_from_artist = function(artist)
 
     assert(client:send(message .. "\n"))
     while (response ~= 'OK') do
-        response, err = client:receive()
+        response, _ = client:receive()
         if (response ~= 'OK') then
             response = string.sub(response, 8, -1) -- remove 'Album: ' 
             table.insert(albums, response)
@@ -57,13 +57,13 @@ M.tracks_from_album = function(artist, album)
     client:receive()
 
     local message = string.format("find \"((artist == '%s') AND (album == '%s'))\"", artist, album)
-    local response, err
+    local response
     local tracks = {}
 
     assert(client:send(message .. "\n"))
     local title, file
     while (response ~= 'OK') do
-        response, err = client:receive()
+        response, _ = client:receive()
 
         if string.sub(response, 1, 6) == "file: " then
             file = string.sub(response, 7, -1)
@@ -90,10 +90,10 @@ M.queue = function()
 
     local queue = {}
     local artist, album, title
-    local response, err
+    local response
 
     while (response ~= 'OK') do
-        response, err = client:receive()
+        response, _ = client:receive()
 
         if string.sub(response, 1, 8) == "Artist: " then
             artist = string.sub(response, 9, -1)
@@ -108,7 +108,8 @@ M.queue = function()
         end
 
         if string.sub(response, 1, 4) == "Id: " then
-            local song = { artist=artist, album=album, title=title }
+            local id = string.sub(response, 5, -1)
+            local song = { artist=artist, album=album, title=title, id=id }
             table.insert(queue, song)
         end
     end
@@ -155,5 +156,90 @@ M.add_file_to_queue = function(file)
 
     client:close()
 end
+
+M.clear = function()
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+    local message = "clear"
+    assert(client:send(message .. "\n"))
+    client:receive()
+    client:close()
+end
+
+M.state = function()
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+
+    local message = "status"
+    local response
+    local state
+
+    assert(client:send(message .. "\n"))
+    while (response ~= 'OK') do
+        response, _ = client:receive()
+        if string.sub(response, 1, 7) == 'state: ' then
+            state = string.sub(response, 8, -1)
+        end
+    end
+
+    client:close()
+    return state
+end
+
+M.toggle_state = function()
+    local state = M.state()
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+
+    local message
+    if (state == 'play') then
+        message = 'pause'
+        assert(client:send(message .. "\n"))
+    else
+        message = 'play'
+        assert(client:send(message .. "\n"))
+    end
+
+    client:close()
+end
+
+M.next = function()
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+    local message = "next"
+    assert(client:send(message .. "\n"))
+    client:receive()
+    client:close()
+end
+
+M.prev = function()
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+    local message = "previous"
+    assert(client:send(message .. "\n"))
+    client:receive()
+    client:close()
+end
+
+M.current = function()
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+
+    local message = "status"
+    local response
+    local id
+
+    assert(client:send(message .. "\n"))
+    while (response ~= 'OK') do
+        response, _ = client:receive()
+        if string.sub(response, 1, 8) == "songid: " then
+            id = string.sub(response, 9, -1)
+        end
+    end
+
+    client:close()
+    return id
+end
+
 
 return M
