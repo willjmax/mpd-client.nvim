@@ -4,6 +4,17 @@ local client = assert(socket.tcp())
 local M = {}
 local mpd_server = { host = '127.0.0.1', port = 6600 }
 
+local function check_errors(response)
+    local no_database = "ACK [50@0] {list} No database"
+
+    if (response == no_database) then
+        print('MPD Error: No Database')
+        return true
+    end
+
+    return false
+end
+
 M.setup = function(config)
     for key, value in pairs(config) do
         mpd_server[key] = value
@@ -21,6 +32,11 @@ M.artists = function()
     assert(client:send(message .. "\n"))
     while (response ~= 'OK') do
         response, _ = client:receive()
+
+        if check_errors(response) then
+            break
+        end
+
         if (response ~= 'OK') then
             response = string.sub(response, 9, -1) -- remove 'Arist: '
             table.insert(artists, response)
@@ -201,6 +217,7 @@ M.toggle_state = function()
     end
 
     client:close()
+    return message
 end
 
 M.next = function()
@@ -241,5 +258,14 @@ M.current = function()
     return id
 end
 
+M.play = function(songid)
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+
+    local message = string.format("playid %s", songid)
+
+    assert(client:send(message .. "\n"))
+    client:close()
+end
 
 return M

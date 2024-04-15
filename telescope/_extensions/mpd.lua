@@ -15,66 +15,198 @@ requests.setup({
 -- keep track of opened picker
 Picker = { picker='', artist='', album='', opts={} }
 
+-- TODO: stop hardcoding this
+PREVIEW_BUFFER_LINES = 32
+
+local get_glyph = function(state)
+    if (state == "play") then
+        return '󰝚'
+    else
+        return '󰝛'
+    end
+end
+
 local playlist_previewer = previewers.new_buffer_previewer({
     title = 'Queue',
     define_preview = function(self, entry, status)
         local buf = self.state.bufnr
         local queue = requests.queue()
         local current = requests.current()
-        local state = requests.state()
-
+        local mpd_state = requests.state()
         local glyph
-        if (state == "play") then
+
+        -- 0 indexed
+        local cursor = self.state.cursor or 0
+        local top = self.state.top or 0
+
+        -- 1 indexed
+        local selected_track = self.state.selected_track or 1
+
+        self.state.qlen = #queue
+        self.state.qlookup = {}
+
+        if (self.state.first == nil) then
+            self.state.first = true
+        end
+
+        if (mpd_state == "play") then
             glyph = '󰝚'
         else
             glyph = '󰝛'
         end
 
         for key, song in ipairs(queue) do
+            table.insert(self.state.qlookup, song)
+
             local display
             if (song.id == current) then
                 display = string.format("%s %s - %s", glyph, song.artist, song.title)
+                if self.state.first then
+                    selected_track = key
+
+                    if (selected_track > PREVIEW_BUFFER_LINES) and (selected_track < self.state.qlen - PREVIEW_BUFFER_LINES) then
+                        cursor = PREVIEW_BUFFER_LINES / 2
+                        top = math.max(0, selected_track - cursor - 1)
+                    elseif (selected_track >= self.state.qlen - PREVIEW_BUFFER_LINES) then
+                        cursor = PREVIEW_BUFFER_LINES - (self.state.qlen - selected_track) - 1
+                        top = self.state.qlen - PREVIEW_BUFFER_LINES
+                    else
+                        cursor = selected_track-1
+                    end
+
+                    self.state.playing = key
+                    self.state.first = false
+                end
             else
                 display = string.format("  %s - %s", song.artist, song.title)
             end
-            vim.api.nvim_buf_set_lines(buf, key, key, true, { display, '' })
+
+            vim.api.nvim_buf_set_lines(buf, key-1, key-1, true, { display })
         end
+
+        self.state.cursor = cursor
+        self.state.selected_track = selected_track
+        self.state.top = top
+        self.state.ns_id = vim.api.nvim_buf_add_highlight(buf, 0, "TabLine", self.state.selected_track - 1, 0, -1)
+
+        if (top > 0) then
+            vim.schedule(function()
+                self:scroll_fn(top)
+            end)
+        end
+
     end,
 })
 
-local refresh_picker = function()
-    if Picker.picker == 'Artists' then
-        Artists(Picker.opts)
-    end
-
-    if Picker.picker == 'Albums' then
-        Albums(Picker.opts, Picker.artist)
-    end
-
-    if Picker.picker == 'Tracks' then
-        Tracks(Picker.opts, Picker.artist, Picker.album)
-    end
-end
-
 local common_mappings = function(prompt_bufnr, map)
+    map("n", "<Esc>", function(_prompt_bufnr)
+        actions.close(_prompt_bufnr)
+    end)
+
     map("n", "<leader>c", function(_prompt_bufnr)
         requests.clear()
-        refresh_picker()
+
+        if Picker.picker == 'Artists' then
+            Artists(Picker.opts)
+        end
+
+        if Picker.picker == 'Albums' then
+            Albums(Picker.opts, Picker.artist)
+        end
+
+        if Picker.picker == 'Tracks' then
+            Tracks(Picker.opts, Picker.artist, Picker.album)
+        end
     end)
 
     map("n", "<leader>p", function(_prompt_bufnr)
-        requests.toggle_state()
-        refresh_picker()
+        local key = playlist_previewer.state.selected_track
+        local song = playlist_previewer.state.qlookup[key]
+        requests.play(song.id)
+
+        local display
+        if (playlist_previewer.state.playing) then
+            local playing_key = playlist_previewer.state.playing
+            local playing = playlist_previewer.state.qlookup[playing_key]
+            display = string.format("  %s - %s", playing.artist, playing.title)
+            vim.api.nvim_buf_set_lines(playlist_previewer.state.bufnr, playing_key-1, playing_key, true, { display })
+        end
+
+        playlist_previewer.state.playing = key
+        display = string.format("%s %s - %s", '󰝚', song.artist, song.title)
+        vim.api.nvim_buf_set_lines(playlist_previewer.state.bufnr, key-1, key, true, { display })
+        vim.api.nvim_buf_add_highlight(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, "TabLine", key-1, 0, -1)
     end)
 
-    map("n", "<S-n>", function(_prompt_bufnr)
+    map("n", "<leader>P", function(_prompt_bufnr)
+        local state = requests.toggle_state()
+        local key = playlist_previewer.state.playing
+        local song = playlist_previewer.state.qlookup[key]
+
+        local glyph = get_glyph(state)
+        local display = string.format("%s %s - %s", glyph, song.artist, song.title)
+        vim.api.nvim_buf_set_lines(playlist_previewer.state.bufnr, key-1, key, true, { display })
+
+        local selected = playlist_previewer.state.selected_track
+        if (selected == key) then
+            print('in it')
+            vim.api.nvim_buf_add_highlight(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, "TabLine", selected-1, 0, -1)
+        end
+    end)
+
+    map("n", "<S-j>", function(_prompt_bufnr)
+        local cursor = playlist_previewer.state.cursor
+        local selected_track = playlist_previewer.state.selected_track
+
+        if (selected_track == playlist_previewer.state.qlen) then
+            return
+        else
+            selected_track = selected_track + 1
+        end
+
+        if (cursor == PREVIEW_BUFFER_LINES-1) then
+            playlist_previewer:scroll_fn(1)
+            playlist_previewer.state.top = playlist_previewer.state.top + 1
+        else
+            cursor = cursor + 1
+        end
+
+        playlist_previewer.state.cursor = cursor
+        playlist_previewer.state.selected_track = selected_track
+        vim.api.nvim_buf_clear_namespace(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, 0, -1)
+        vim.api.nvim_buf_add_highlight(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, "TabLine", selected_track-1, 0, -1)
+    end)
+
+    map("n", "<S-k>", function(_prompt_bufnr)
+        local cursor = playlist_previewer.state.cursor
+        local selected_track = playlist_previewer.state.selected_track
+
+        -- do nothing on the first track in the playlist
+        if (selected_track == 1) then
+            return
+        else
+            selected_track = selected_track - 1
+        end
+
+        if (cursor > 0) then
+            cursor = cursor - 1
+        else
+            playlist_previewer:scroll_fn(-1)
+            playlist_previewer.state.top = playlist_previewer.state.top - 1
+        end
+
+        playlist_previewer.state.cursor = cursor
+        playlist_previewer.state.selected_track = selected_track
+        vim.api.nvim_buf_clear_namespace(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, 0, -1)
+        vim.api.nvim_buf_add_highlight(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, "TabLine", selected_track-1, 0, -1)
+    end)
+
+    map("n", "<leader>j", function(_prompt_bufnr)
         requests.next()
-        refresh_picker()
     end)
 
-    map("n", "<S-p>", function(_prompt_bufnr)
+    map("n", "<leader>k", function(_prompt_bufnr)
         requests.prev()
-        refresh_picker()
     end)
 end
 
@@ -91,6 +223,7 @@ function Artists(opts)
         sorter = conf.generic_sorter(opts),
         attach_mappings = function(prompt_bufnr, map)
             common_mappings(prompt_bufnr, map)
+
             actions.select_default:replace(function()
                 actions.close(prompt_bufnr)
                 local selection = action_state.get_selected_entry()
@@ -118,7 +251,6 @@ function Albums(opts, artist)
         sorter = conf.generic_sorter(opts),
         attach_mappings = function(prompt_bufnr, map)
             common_mappings(prompt_bufnr, map)
-
             map("n", "<leader>a", function(_prompt_bufnr)
                 local album = action_state.get_selected_entry()[1]
                 requests.add_album_to_queue(artist, album)
@@ -149,6 +281,7 @@ function Tracks(opts, artist, album)
     Picker.album = album
     Picker.opts = opts
 
+
     pickers.new(opts, {
         prompt_title = album,
         finder = finders.new_table {
@@ -157,7 +290,7 @@ function Tracks(opts, artist, album)
                 return {
                     value = entry,
                     display = entry.title,
-                    ordinal = entry.title
+                    ordinal = entry.title,
                 }
             end,
         },
