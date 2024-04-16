@@ -105,18 +105,7 @@ local common_mappings = function(prompt_bufnr, map)
 
     map("n", "<leader>c", function(_prompt_bufnr)
         requests.clear()
-
-        if Picker.picker == 'Artists' then
-            Artists(Picker.opts)
-        end
-
-        if Picker.picker == 'Albums' then
-            Albums(Picker.opts, Picker.artist)
-        end
-
-        if Picker.picker == 'Tracks' then
-            Tracks(Picker.opts, Picker.artist, Picker.album)
-        end
+        vim.api.nvim_buf_set_lines(playlist_previewer.state.bufnr, 0, -1, true, {})
     end)
 
     map("n", "<leader>p", function(_prompt_bufnr)
