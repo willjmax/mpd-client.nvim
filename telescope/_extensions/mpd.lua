@@ -4,7 +4,6 @@ local actions = require "telescope.actions"
 local previewers = require "telescope.previewers"
 local action_state = require "telescope.actions.state"
 local conf = require("telescope.config").values
-
 local requests = require("mpd-client.requests")
 
 requests.setup({
@@ -33,7 +32,7 @@ local playlist_previewer = previewers.new_buffer_previewer({
         local queue = requests.queue()
         local current = requests.current()
         local mpd_state = requests.state()
-        local glyph
+        local glyph = get_glyph(mpd_state)
 
         -- 0 indexed
         local cursor = self.state.cursor or 0
@@ -42,41 +41,38 @@ local playlist_previewer = previewers.new_buffer_previewer({
         -- 1 indexed
         local selected_track = self.state.selected_track or 1
 
+        self.state.current = {}
         self.state.qlen = #queue
         self.state.qlookup = {}
+        self.state.song_lookup = {}
+
+        -- initialize to 1, change if there is a track playing
+        self.state.playing = 1
 
         if (self.state.first == nil) then
             self.state.first = true
         end
 
-        if (mpd_state == "play") then
-            glyph = '󰝚'
-        else
-            glyph = '󰝛'
-        end
-
         for key, song in ipairs(queue) do
             table.insert(self.state.qlookup, song)
+            table.insert(self.state.song_lookup, song.id, { song=song, key=key })
 
             local display
             if (song.id == current) then
                 display = string.format("%s %s - %s", glyph, song.artist, song.title)
-                if self.state.first then
-                    selected_track = key
+                selected_track = key
 
-                    if (selected_track > PREVIEW_BUFFER_LINES) and (selected_track < self.state.qlen - PREVIEW_BUFFER_LINES) then
-                        cursor = PREVIEW_BUFFER_LINES / 2
-                        top = math.max(0, selected_track - cursor - 1)
-                    elseif (selected_track >= self.state.qlen - PREVIEW_BUFFER_LINES) then
-                        cursor = PREVIEW_BUFFER_LINES - (self.state.qlen - selected_track) - 1
-                        top = self.state.qlen - PREVIEW_BUFFER_LINES
-                    else
-                        cursor = selected_track-1
-                    end
-
-                    self.state.playing = key
-                    self.state.first = false
+                if (selected_track > PREVIEW_BUFFER_LINES) and (selected_track < self.state.qlen - PREVIEW_BUFFER_LINES) then
+                    cursor = PREVIEW_BUFFER_LINES / 2
+                    top = math.max(0, selected_track - cursor - 1)
+                elseif (selected_track >= self.state.qlen - PREVIEW_BUFFER_LINES) then
+                    cursor = PREVIEW_BUFFER_LINES - (self.state.qlen - selected_track) - 1
+                    top = self.state.qlen - PREVIEW_BUFFER_LINES
+                else
+                    cursor = selected_track-1
                 end
+
+                self.state.playing = key
             else
                 display = string.format("  %s - %s", song.artist, song.title)
             end
@@ -105,6 +101,11 @@ local common_mappings = function(prompt_bufnr, map)
 
     map("n", "<leader>c", function(_prompt_bufnr)
         requests.clear()
+
+        playlist_previewer.state.cursor = 0
+        playlist_previewer.state.selected_track = 1
+        playlist_previewer.state.top = 0
+
         vim.api.nvim_buf_set_lines(playlist_previewer.state.bufnr, 0, -1, true, {})
     end)
 
@@ -138,7 +139,6 @@ local common_mappings = function(prompt_bufnr, map)
 
         local selected = playlist_previewer.state.selected_track
         if (selected == key) then
-            print('in it')
             vim.api.nvim_buf_add_highlight(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, "TabLine", selected-1, 0, -1)
         end
     end)
@@ -159,6 +159,8 @@ local common_mappings = function(prompt_bufnr, map)
         else
             cursor = cursor + 1
         end
+
+        print(cursor, selected_track)
 
         playlist_previewer.state.cursor = cursor
         playlist_previewer.state.selected_track = selected_track
@@ -184,18 +186,12 @@ local common_mappings = function(prompt_bufnr, map)
             playlist_previewer.state.top = playlist_previewer.state.top - 1
         end
 
+        print(cursor, selected_track)
+
         playlist_previewer.state.cursor = cursor
         playlist_previewer.state.selected_track = selected_track
         vim.api.nvim_buf_clear_namespace(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, 0, -1)
         vim.api.nvim_buf_add_highlight(playlist_previewer.state.bufnr, playlist_previewer.state.ns_id, "TabLine", selected_track-1, 0, -1)
-    end)
-
-    map("n", "<leader>j", function(_prompt_bufnr)
-        requests.next()
-    end)
-
-    map("n", "<leader>k", function(_prompt_bufnr)
-        requests.prev()
     end)
 end
 
@@ -270,7 +266,6 @@ function Tracks(opts, artist, album)
     Picker.album = album
     Picker.opts = opts
 
-
     pickers.new(opts, {
         prompt_title = album,
         finder = finders.new_table {
@@ -294,14 +289,18 @@ function Tracks(opts, artist, album)
             map("n", "<leader>a", function(prompt_bufnr)
                 local selection = action_state.get_selected_entry()
                 requests.add_file_to_queue(selection.value.file)
-                Tracks(opts, artist, album)
-            end)
+                playlist_previewer.state.qlen = playlist_previewer.state.qlen + 1
 
-            actions.select_default:replace(function()
-                actions.close(prompt_bufnr)
-                local selection = action_state.get_selected_entry()
-                requests.add_file_to_queue(selection.value.file)
-                Tracks(opts, artist, album)
+                -- mpd position is zero indexed
+                local songid = requests.get_id_from_pos(playlist_previewer.state.qlen - 1)
+                local song = requests.song_info(songid)
+
+                table.insert(playlist_previewer.state.qlookup, song)
+                table.insert(playlist_previewer.state.song_lookup, { key=playlist_previewer.state.qlen, song=song })
+
+                local display = string.format("  %s - %s", song.artist, song.title)
+                local key = playlist_previewer.state.qlen
+                vim.api.nvim_buf_set_lines(playlist_previewer.state.bufnr, key-1, key, true, { display })
             end)
 
             return true

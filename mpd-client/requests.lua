@@ -268,4 +268,52 @@ M.play = function(songid)
     client:close()
 end
 
+M.get_id_from_pos = function(pos)
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+
+    local message = string.format("playlistinfo %d", pos)
+    assert(client:send(message .. "\n"))
+
+    local response, id
+    while (response ~= 'OK') do
+        response, _ = client:receive()
+        if string.sub(response, 1, 4) == "Id: " then
+            id = string.sub(response, 5, -1)
+        end
+    end
+
+    client:close()
+    return id
+end
+
+M.song_info = function(songid)
+    assert(client:connect(mpd_server.host, mpd_server.port))
+    client:receive()
+
+    local message = string.format("playlistid %d", songid)
+    assert(client:send(message .. "\n"))
+
+    local response
+    local song = { id=songid }
+    while (response ~= 'OK') do
+        response, _ = client:receive()
+        if string.sub(response, 1, 8) == "Artist: " then
+            song.artist = string.sub(response, 9, -1)
+        end
+
+        if string.sub(response, 1, 7) == "Album: " then
+            song.album = string.sub(response, 8, -1)
+        end
+
+        if string.sub(response, 1, 7) == "Title: " then
+            song.title = string.sub(response, 8, -1)
+        end
+    end
+
+    client:close()
+    return song
+end
+
+
 return M
